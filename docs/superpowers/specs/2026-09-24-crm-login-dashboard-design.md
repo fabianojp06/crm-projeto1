@@ -59,9 +59,12 @@ do usuário e o botão "Sair".
    redirecionado para `/dashboard`.
 2. `proxy.ts` (export `proxy`), executado antes de cada rota, segue o padrão `updateSession`
    do `@supabase/ssr`:
-   - cria o `createServerClient` com `cookies.getAll`/`setAll` lendo da `request` e
-     escrevendo na `response`, e devolve essa mesma `response` (é assim que a sessão é
-     renovada);
+   - cria o `createServerClient` com `cookies.getAll` lendo da `request`. O `setAll` faz
+     duas coisas: (a) grava cada cookie também em `request.cookies` e recria
+     `response = NextResponse.next({ request })`, para que as páginas renderizadas **nesta
+     mesma requisição** já leiam o token renovado; e (b) grava os cookies na `response`, para
+     que cheguem ao navegador. O proxy devolve essa `response`. Sem o passo (a), a página
+     tentaria renovar de novo com um refresh token já usado e deslogaria o usuário à toa;
    - valida o usuário com `supabase.auth.getClaims()`, nunca com `getSession()`;
    - rota `/dashboard` **ou** `/dashboard/*` sem sessão (checagem `pathname === '/dashboard'
      || pathname.startsWith('/dashboard/')`) → redireciona para `/login`;
@@ -221,7 +224,9 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   - **Validação (Zod na action):** `id` e cada item de `idsOrdenadosDestino` são uuid; a
     lista não tem repetidos e contém `id`. A função SQL deduplica a lista mesmo assim,
     mantendo a primeira ocorrência. Se o `update` do negócio afetar 0 linhas (negócio excluído
-    em outra aba, ou de outro usuário), a função lança erro, e a action devolve "Este negócio
+    em outra aba, ou de outro usuário), a função faz
+    `raise exception 'negocio_nao_encontrado' using errcode = 'P0002'`. A action reconhece o
+    caso pelo `error.code === 'P0002'`, nunca pelo texto da mensagem, e devolve "Este negócio
     não existe mais". Qualquer outro erro do banco vira "Não foi possível mover o negócio,
     tente de novo". Nos dois casos o cliente faz o rollback e mostra o toast.
   - **Empates:** a movimentação é serializada pelo lock, mas criar ou editar um negócio usa
@@ -310,8 +315,12 @@ aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem ac
 2. Acesso a `/dashboard` sem sessão → redireciona para `/login`.
 3. Criar cliente, criar negócio e mover o negócio de etapa; depois de recarregar a página,
    ele continua na nova etapa.
-4. Isolamento: o usuário A cria um cliente; o usuário B não vê esse cliente, e uma tentativa
-   de B de criar um negócio apontando para o cliente de A é recusada pelo banco.
+4. Isolamento: o usuário A cria um cliente pela tela; o usuário B abre `/dashboard/clientes`
+   e não vê esse cliente. Como a tela de B nunca oferece o cliente de A, a segunda parte não
+   passa pela interface: o teste cria um cliente Supabase (`createClient` com a URL e a
+   publishable key) logado com e-mail e senha de B e tenta
+   `insert into negocios` com o `cliente_id` de A. O teste espera um erro de violação de FK
+   (código `23503`) e nenhuma linha criada.
 
 ## 10. Fora do escopo
 
