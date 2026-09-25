@@ -65,10 +65,19 @@ do usuário e o botão "Sair".
    - valida o usuário com `supabase.auth.getClaims()`, nunca com `getSession()`;
    - rota `/dashboard/*` sem sessão → redireciona para `/login`;
    - `/login` ou `/cadastro` com sessão → redireciona para `/dashboard`;
+   - todo redirecionamento cria o `NextResponse.redirect` e **copia para ele os cookies** da
+     `response` do Supabase. Sem isso, um token renovado durante o redirecionamento se perde
+     e o usuário é deslogado logo depois;
+   - requisições de Server Action (com o header `Next-Action`) **não** são redirecionadas:
+     só renovam a sessão e seguem adiante. A própria action checa o usuário e devolve o
+     erro legível (item 3). Redirecionar um POST de action faria o cliente receber um erro
+     genérico em vez da mensagem;
    - `matcher` exclui `_next/static`, `_next/image`, `favicon.ico` e arquivos de imagem.
 3. Defesa em profundidade: `dashboard/layout.tsx` e **toda** Server Action também obtêm o
    usuário com `getClaims()`. Sem usuário, o layout redireciona para `/login` e a action
-   devolve o erro "Sessão expirada, faça login novamente". O RLS continua sendo a garantia
+   devolve o erro "Sessão expirada, faça login novamente". No cliente, toda chamada de action
+   fica em `try/catch`: um erro lançado (rede, resposta inesperada) é tratado como falha,
+   com rollback do otimista e toast. O RLS continua sendo a garantia
    final sobre os dados.
 4. "Sair" encerra a sessão e redireciona para `/login`.
 5. A sessão fica em cookies gerenciados pelo `@supabase/ssr`, com um cliente para o servidor
@@ -162,13 +171,17 @@ de outro usuário.
   e "Perdido") na mesma ordem do kanban.
 
 Sem dados (zero clientes **e** zero negócios): mensagem de estado vazio e botão "Gerar dados
-de exemplo". A Server Action insere 10 clientes num único insert, depois 15 negócios num
-único insert usando os ids retornados, distribuídos entre as etapas, com `posicao` definida
-explicitamente (0, 1, 2… dentro de cada etapa). O botão fica desabilitado
-durante o envio, e a action não faz nada se a conta já tiver clientes.
+de exemplo". A Server Action chama a função SQL `public.gerar_dados_exemplo()`
+(`security invoker`), que numa **única transação** insere 10 clientes e 15 negócios
+distribuídos entre as etapas, com `posicao` definida explicitamente (0, 1, 2… dentro de cada
+etapa). Se qualquer insert falhar, nada fica gravado e o estado vazio continua disponível para
+tentar de novo. O botão fica desabilitado durante o envio, e a função não faz nada se a conta
+já tiver clientes.
 
 **Clientes:** tabela ordenada por nome, com busca por nome feita no servidor
-(`?q=` em `searchParams` + `ilike`). Os modais de criar e editar usam o mesmo formulário. Ao
+(`?q=` em `searchParams`, aplicado com `.ilike('nome', ...)` direto, nunca com `.or()`
+montado por interpolação). Antes da busca, `\`, `%` e `_` do texto são escapados com `\`,
+para que "_" ou "%" procurem o próprio caractere. Os modais de criar e editar usam o mesmo formulário. Ao
 excluir, a confirmação avisa que os negócios do cliente também serão excluídos.
 
 **Funil:** 5 colunas na ordem Contato → Proposta → Negociação → Fechado → Perdido, cada uma
@@ -188,7 +201,9 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   resultado é 0). Se não houver clientes, o modal mostra "Cadastre um
   cliente primeiro" com link para `/dashboard/clientes`.
 - **Editar e excluir:** clicar no card abre o mesmo formulário preenchido, com o botão
-  "Excluir" (que pede confirmação).
+  "Excluir" (que pede confirmação). Se a edição trocar a `etapa`, o negócio vai para o **fim
+  da nova coluna** (`coalesce(max(posicao), -1) + 1` na etapa de destino), na mesma
+  regra do novo negócio. Se a etapa não mudar, a `posicao` é mantida.
 
 **Atualização da tela:** toda Server Action que escreve chama `revalidatePath` na rota
 afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
@@ -205,13 +220,16 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
     só estes formatos são aceitos:
     - vazio → erro "Valor é obrigatório". Nunca vira 0;
     - só dígitos: `1500` → 1500;
-    - vírgula decimal, com ou sem ponto de milhar em grupos de 3: `1500,5`, `1.500,50`,
-      `1.500` → 1500,5 / 1500,50 / 1500;
+    - vírgula decimal, com ou sem ponto de milhar, em que o primeiro grupo tem de 1 a 3
+      dígitos **sem zero à esquerda** e os demais têm exatamente 3: `1500,5`, `1.500,50`,
+      `1.500` → 1500,5 / 1500,50 / 1500. `0.500` e `01.500` são inválidos;
     - ponto decimal com 1 ou 2 casas e sem vírgula: `1500.5`, `1500.50` → 1500,5 / 1500,50;
     - qualquer outra coisa → erro "Valor inválido. Use o formato 1.500,50".
 
-    Um ponto seguido de exatamente 3 dígitos é tratado como milhar (`1.500` = 1500), nunca
-    como decimal. Assim nenhuma entrada é multiplicada em silêncio.
+    Um ponto seguido de exatamente 3 dígitos é tratado como milhar (`2.500` = 2500), que é a
+    leitura brasileira. É uma escolha consciente: quem digitar `2.500` querendo dizer 2,5 vê
+    "R$ 2.500,00" no card, e isso é corrigível pela edição. O campo mostra abaixo dele o valor
+    interpretado ("= R$ 2.500,00") enquanto a pessoa digita, para evitar a surpresa.
   - Cadastro: `nome` obrigatório; `email` válido; `senha` com no mínimo 6 caracteres.
 - Os erros do Supabase Auth são traduzidos pelo `error.code`, não pela mensagem em inglês:
   `invalid_credentials` → "E-mail ou senha incorretos"; `user_already_exists` → "Este e-mail
@@ -230,16 +248,20 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
 **Vitest (unidade)**
 - `lib/metrics.ts`: lista vazia, mistura de etapas, soma de valores decimais.
 - `lib/schemas.ts`: casos válidos e inválidos de cada schema; `parseValorBRL` com todos os
-  formatos da seção 8, incluindo vazio, `1.500`, `1500.50`, `1.500,50` e entradas inválidas.
+  formatos da seção 8, incluindo vazio, `1.500`, `1500.50`, `1.500,50` e entradas inválidas
+  (`0.500`, `01.500`, `1.50,5`); escape de `%`/`_` da busca.
 
 **Playwright (ponta a ponta)**
 
 *Ambiente:* Supabase local (`supabase start`, com as migrations de `supabase/migrations/`
 aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem acumular lixo.
 - E-mails únicos por execução: `e2e+<timestamp>-<n>@exemplo.com`.
-- `globalSetup` cria os usuários A e B pela API de admin (com `nome` no metadado) e salva o
-  `storageState` de cada um. Os testes que não são de cadastro reutilizam esse estado.
-- `globalTeardown` lista os usuários com `auth.admin.listUsers` e apaga com
+- `globalSetup` cria os usuários A e B com `auth.admin.createUser` (com `nome` em
+  `user_metadata` e `email_confirm: true`, já que a API de admin não confirma o e-mail
+  sozinha), faz login pela tela e salva o `storageState` de cada um. Os testes que não são de
+  cadastro reutilizam esse estado.
+- `globalTeardown` percorre **todas as páginas** de `auth.admin.listUsers` (`page`/`perPage`,
+  até uma página vir vazia) e apaga com
   `auth.admin.deleteUser` **todos** cujo e-mail começa com `e2e+`. Isso inclui o usuário
   criado pela tela no cenário 1, e também sobras de execuções interrompidas. Usa
   `SUPABASE_SERVICE_ROLE_KEY`. O cascade remove perfis, clientes e negócios.
