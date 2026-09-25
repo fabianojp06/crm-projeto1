@@ -63,7 +63,8 @@ do usuário e o botão "Sair".
      escrevendo na `response`, e devolve essa mesma `response` (é assim que a sessão é
      renovada);
    - valida o usuário com `supabase.auth.getClaims()`, nunca com `getSession()`;
-   - rota `/dashboard/*` sem sessão → redireciona para `/login`;
+   - rota `/dashboard` **ou** `/dashboard/*` sem sessão (checagem `pathname === '/dashboard'
+     || pathname.startsWith('/dashboard/')`) → redireciona para `/login`;
    - `/login` ou `/cadastro` com sessão → redireciona para `/dashboard`;
    - todo redirecionamento cria o `NextResponse.redirect` e **copia para ele os cookies** da
      `response` do Supabase. Sem isso, um token renovado durante o redirecionamento se perde
@@ -199,7 +200,9 @@ excluir, a confirmação avisa que os negócios do cliente também serão exclu�
 
 **Funil:** 5 colunas na ordem Contato → Proposta → Negociação → Fechado → Perdido, cada uma
 com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em BRL.
-- **Ordem:** a consulta usa `order by posicao, created_at`.
+- **Ordem:** a consulta usa `order by posicao, created_at, id`. O `id` é o desempate final,
+  porque os negócios gerados numa mesma transação (dados de exemplo) têm o mesmo `created_at`.
+  Toda ordenação desta seção, inclusive a de dentro de `mover_negocio`, usa esses três campos.
 - **Arrastar:** vale mover entre colunas e reordenar dentro da mesma coluna. Ao soltar, a tela
   se atualiza na hora (atualização otimista) e é chamada a Server Action
   `moverNegocio(id, etapaDestino, idsOrdenadosDestino[])`. Ela chama a função SQL
@@ -207,17 +210,24 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   transação atualiza a `etapa` do negócio e renumera `posicao` (0..n-1) de **todas** as
   linhas da coluna de destino: primeiro os ids na ordem recebida, depois qualquer outro
   negócio da coluna que não veio na lista (por exemplo, criado em outra aba), em
-  `posicao, created_at`. A coluna de origem não é renumerada: os buracos não afetam a ordem.
+  `posicao, created_at, id`. A coluna de origem não é renumerada: os buracos não afetam a
+  ordem.
+  - **Concorrência:** a função começa com o mesmo lock por usuário de `gerar_dados_exemplo`
+    (`pg_advisory_xact_lock(hashtext(auth.uid()::text))`). Duas movimentações simultâneas do
+    mesmo usuário rodam em fila, uma depois da outra, e nunca entram em deadlock.
   A renumeração só toca linhas com `etapa = etapaDestino` depois da mudança de etapa. Ids da
   lista que estejam em outra coluna (lista desatualizada, com um card movido em outra aba) são
   ignorados, e nunca recebem `posicao` de uma coluna que não é a deles.
-  - **Validação:** `id` precisa estar em `idsOrdenadosDestino`. Se o `update` do negócio
-    afetar 0 linhas (negócio excluído em outra aba, ou de outro usuário), a função lança erro.
-    A action devolve "Este negócio não existe mais", e o cliente faz o rollback e mostra o
-    toast.
-  - **Empates:** duas escritas simultâneas na mesma coluna (duas abas) podem, raramente,
+  - **Validação (Zod na action):** `id` e cada item de `idsOrdenadosDestino` são uuid; a
+    lista não tem repetidos e contém `id`. A função SQL deduplica a lista mesmo assim,
+    mantendo a primeira ocorrência. Se o `update` do negócio afetar 0 linhas (negócio excluído
+    em outra aba, ou de outro usuário), a função lança erro, e a action devolve "Este negócio
+    não existe mais". Qualquer outro erro do banco vira "Não foi possível mover o negócio,
+    tente de novo". Nos dois casos o cliente faz o rollback e mostra o toast.
+  - **Empates:** a movimentação é serializada pelo lock, mas criar ou editar um negócio usa
+    `max + 1` fora dele. Uma criação simultânea a outra escrita na mesma coluna pode, raramente,
     gerar a mesma `posicao`. Isso é aceito de propósito: a ordem continua determinística pelo
-    desempate em `created_at`, e o próximo arraste naquela coluna renumera tudo. Não há
+    desempate `created_at, id`, e o próximo arraste naquela coluna renumera tudo. Não há
     `unique (user_id, etapa, posicao)`.
 - **Novo negócio:** modal com título, valor, cliente (select) e etapa inicial. Entra no fim
   da coluna: `posicao = coalesce(max(posicao), -1) + 1` (em coluna vazia, `max` é nulo e o
