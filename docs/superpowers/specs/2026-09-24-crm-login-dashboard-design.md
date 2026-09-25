@@ -276,8 +276,8 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
 - `lib/metrics.ts`: lista vazia, mistura de etapas, soma de valores decimais.
 - `lib/schemas.ts`: casos válidos e inválidos de cada schema; `parseValorBRL` com todos os
   formatos da seção 8, incluindo vazio, `1.500`, `1500.50`, `1.500,50` e entradas inválidas
-  (`0.500`, `01.500`, `1.50,5`, `1,999`), mais `0,50` e `0.50` válidos; escape de `\`, `%`,
-  `_` e `*` da busca.
+  (`0.500`, `01.500`, `1.50,5`, `1,999`), mais `0,50` e `0.50` válidos; escape de `\`, `%`
+  e `_` da busca.
 
 **Playwright (ponta a ponta)**
 
