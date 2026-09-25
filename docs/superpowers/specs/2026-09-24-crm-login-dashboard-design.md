@@ -91,6 +91,7 @@ lib/schemas.ts           schemas Zod
 components/ui/           componentes shadcn
 components/crm/          componentes do CRM (tabela, formulários, kanban, cards)
 app/page.tsx             redireciona para /dashboard
+app/error.tsx            erro genérico para o que escapar do layout do dashboard
 proxy.ts
 supabase/migrations/     SQL de tabelas, RLS e trigger
 tests/unit/, tests/e2e/
@@ -162,7 +163,8 @@ de outro usuário.
 
 Sem dados (zero clientes **e** zero negócios): mensagem de estado vazio e botão "Gerar dados
 de exemplo". A Server Action insere 10 clientes num único insert, depois 15 negócios num
-único insert usando os ids retornados, distribuídos entre as etapas. O botão fica desabilitado
+único insert usando os ids retornados, distribuídos entre as etapas, com `posicao` definida
+explicitamente (0, 1, 2… dentro de cada etapa). O botão fica desabilitado
 durante o envio, e a action não faz nada se a conta já tiver clientes.
 
 **Clientes:** tabela ordenada por nome, com busca por nome feita no servidor
@@ -176,10 +178,14 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   se atualiza na hora (atualização otimista) e é chamada a Server Action
   `moverNegocio(id, etapaDestino, idsOrdenadosDestino[])`. Ela chama a função SQL
   `public.mover_negocio` (`security invoker`, portanto sujeita ao RLS), que numa única
-  transação atualiza a `etapa` do negócio e renumera `posicao` (0..n-1) na coluna de destino.
-  A coluna de origem não é renumerada: os buracos não afetam a ordem.
+  transação atualiza a `etapa` do negócio e renumera `posicao` (0..n-1) de **todas** as
+  linhas da coluna de destino: primeiro os ids na ordem recebida, depois qualquer outro
+  negócio da coluna que não veio na lista (por exemplo, criado em outra aba), em
+  `posicao, created_at`. Assim nunca ficam duas posições iguais. A coluna de origem não é
+  renumerada: os buracos não afetam a ordem.
 - **Novo negócio:** modal com título, valor, cliente (select) e etapa inicial. Entra no fim
-  da coluna (`posicao = max + 1`). Se não houver clientes, o modal mostra "Cadastre um
+  da coluna: `posicao = coalesce(max(posicao), -1) + 1` (em coluna vazia, `max` é nulo e o
+  resultado é 0). Se não houver clientes, o modal mostra "Cadastre um
   cliente primeiro" com link para `/dashboard/clientes`.
 - **Editar e excluir:** clicar no card abre o mesmo formulário preenchido, com o botão
   "Excluir" (que pede confirmação).
@@ -193,8 +199,19 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
   para o formulário.
   - Cliente: `nome` obrigatório; `email` em formato válido quando informado.
   - Negócio: `titulo` obrigatório; `valor` entre 0 e 9.999.999.999,99; `etapa` dentro da
-    lista; `cliente_id` uuid. O campo de valor aceita o formato brasileiro ("1.500,50"): o
-    texto é normalizado (remove `.`, troca `,` por `.`) antes de `z.coerce.number()`.
+    lista; `cliente_id` uuid.
+  - **Valor:** campo de texto convertido por `parseValorBRL(texto)` em `lib/schemas.ts`,
+    uma função pura, antes de passar pelo Zod. Os espaços e o prefixo "R$" são removidos, e
+    só estes formatos são aceitos:
+    - vazio → erro "Valor é obrigatório". Nunca vira 0;
+    - só dígitos: `1500` → 1500;
+    - vírgula decimal, com ou sem ponto de milhar em grupos de 3: `1500,5`, `1.500,50`,
+      `1.500` → 1500,5 / 1500,50 / 1500;
+    - ponto decimal com 1 ou 2 casas e sem vírgula: `1500.5`, `1500.50` → 1500,5 / 1500,50;
+    - qualquer outra coisa → erro "Valor inválido. Use o formato 1.500,50".
+
+    Um ponto seguido de exatamente 3 dígitos é tratado como milhar (`1.500` = 1500), nunca
+    como decimal. Assim nenhuma entrada é multiplicada em silêncio.
   - Cadastro: `nome` obrigatório; `email` válido; `senha` com no mínimo 6 caracteres.
 - Os erros do Supabase Auth são traduzidos pelo `error.code`, não pela mensagem em inglês:
   `invalid_credentials` → "E-mail ou senha incorretos"; `user_already_exists` → "Este e-mail
@@ -202,13 +219,18 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
 - Se a movimentação no kanban falhar, o card volta à posição anterior e aparece um toast de
   erro.
 - `dashboard/error.tsx` (componente `'use client'`) mostra uma mensagem amigável e o botão
-  "Tentar novamente", que chama `reset()`.
+  "Tentar novamente", que chama `reset()`. Ele só cobre as **páginas** do dashboard, não o
+  `dashboard/layout.tsx`. Por isso:
+  - o layout não lança erro: sem usuário, redireciona para `/login`; se a busca do perfil
+    falhar, mostra o e-mail no lugar do nome;
+  - um `app/error.tsx` com a mesma mensagem cobre qualquer erro que escape do layout.
 
 ## 9. Testes
 
 **Vitest (unidade)**
 - `lib/metrics.ts`: lista vazia, mistura de etapas, soma de valores decimais.
-- `lib/schemas.ts`: casos válidos e inválidos de cada schema.
+- `lib/schemas.ts`: casos válidos e inválidos de cada schema; `parseValorBRL` com todos os
+  formatos da seção 8, incluindo vazio, `1.500`, `1500.50`, `1.500,50` e entradas inválidas.
 
 **Playwright (ponta a ponta)**
 
@@ -217,7 +239,9 @@ aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem ac
 - E-mails únicos por execução: `e2e+<timestamp>-<n>@exemplo.com`.
 - `globalSetup` cria os usuários A e B pela API de admin (com `nome` no metadado) e salva o
   `storageState` de cada um. Os testes que não são de cadastro reutilizam esse estado.
-- `globalTeardown` apaga todos os usuários criados com `auth.admin.deleteUser`, usando
+- `globalTeardown` lista os usuários com `auth.admin.listUsers` e apaga com
+  `auth.admin.deleteUser` **todos** cujo e-mail começa com `e2e+`. Isso inclui o usuário
+  criado pela tela no cenário 1, e também sobras de execuções interrompidas. Usa
   `SUPABASE_SERVICE_ROLE_KEY`. O cascade remove perfis, clientes e negócios.
 
 *Cenários:*
