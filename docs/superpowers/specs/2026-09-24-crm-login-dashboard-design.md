@@ -68,13 +68,18 @@ do usuário e o botão "Sair".
    - todo redirecionamento cria o `NextResponse.redirect` e **copia para ele os cookies** da
      `response` do Supabase. Sem isso, um token renovado durante o redirecionamento se perde
      e o usuário é deslogado logo depois;
-   - requisições de Server Action (com o header `Next-Action`) **não** são redirecionadas:
+   - requisições de Server Action (método `POST` **e** header `Next-Action`, as duas
+     condições juntas) **não** são redirecionadas:
      só renovam a sessão e seguem adiante. A própria action checa o usuário e devolve o
      erro legível (item 3). Redirecionar um POST de action faria o cliente receber um erro
      genérico em vez da mensagem;
    - `matcher` exclui `_next/static`, `_next/image`, `favicon.ico` e arquivos de imagem.
-3. Defesa em profundidade: `dashboard/layout.tsx` e **toda** Server Action também obtêm o
-   usuário com `getClaims()`. Sem usuário, o layout redireciona para `/login` e a action
+3. Defesa em profundidade: **cada página** do dashboard (`page.tsx`) e **toda** Server Action
+   também obtêm o usuário com `getClaims()`, por meio de um helper `exigirUsuario()` em
+   `lib/supabase/server.ts`. A checagem não fica só no layout porque o App Router não
+   renderiza de novo um layout compartilhado ao navegar entre as abas do dashboard. O layout
+   também chama o helper, mas só para exibir o nome. Sem usuário, a página redireciona para
+   `/login` e a action
    devolve o erro "Sessão expirada, faça login novamente". No cliente, toda chamada de action
    fica em `try/catch`: um erro lançado (rede, resposta inesperada) é tratado como falha,
    com rollback do otimista e toast. O RLS continua sendo a garantia
@@ -185,9 +190,11 @@ clientes da primeira.
 
 **Clientes:** tabela ordenada por nome, com busca por nome feita no servidor
 (`?q=` em `searchParams`, aplicado com `.ilike('nome', ...)` direto, nunca com `.or()`
-montado por interpolação). Antes da busca, `\`, `%` e `_` do texto são escapados com `\`, e
-`*` também, porque o PostgREST o trata como `%`. Assim "_", "%" e "*" procuram o próprio
-caractere. Os modais de criar e editar usam o mesmo formulário. Ao
+montado por interpolação). Antes da busca, `\`, `%` e `_` do texto são escapados com `\`,
+então "_" e "%" procuram o próprio caractere. Limitação aceita: o PostgREST converte todo `*`
+em `%` antes de o Postgres ver o padrão, e o escape não impede isso. Por isso uma busca por
+"*" funciona como curinga e traz todos os clientes. Nomes com `*` são raros, e não compensa
+criar uma função SQL só para isso. Os modais de criar e editar usam o mesmo formulário. Ao
 excluir, a confirmação avisa que os negócios do cliente também serão excluídos.
 
 **Funil:** 5 colunas na ordem Contato → Proposta → Negociação → Fechado → Perdido, cada uma
@@ -201,6 +208,9 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   linhas da coluna de destino: primeiro os ids na ordem recebida, depois qualquer outro
   negócio da coluna que não veio na lista (por exemplo, criado em outra aba), em
   `posicao, created_at`. A coluna de origem não é renumerada: os buracos não afetam a ordem.
+  A renumeração só toca linhas com `etapa = etapaDestino` depois da mudança de etapa. Ids da
+  lista que estejam em outra coluna (lista desatualizada, com um card movido em outra aba) são
+  ignorados, e nunca recebem `posicao` de uma coluna que não é a deles.
   - **Validação:** `id` precisa estar em `idsOrdenadosDestino`. Se o `update` do negócio
     afetar 0 linhas (negócio excluído em outra aba, ou de outro usuário), a função lança erro.
     A action devolve "Este negócio não existe mais", e o cliente faz o rollback e mostra o
