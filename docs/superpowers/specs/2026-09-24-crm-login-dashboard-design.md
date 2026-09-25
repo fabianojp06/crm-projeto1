@@ -157,8 +157,10 @@ de outro usuário.
 ### Automação
 - Função `public.handle_new_user()` com `security definer set search_path = ''` e nomes
   qualificados (`public.profiles`), disparada por um trigger `after insert on auth.users`.
-- O nome vem de `coalesce(new.raw_user_meta_data->>'nome', split_part(new.email, '@', 1))`,
-  para que usuários criados pelo painel ou pela API de admin não quebrem o cadastro.
+- O nome vem de `coalesce(nullif(trim(new.raw_user_meta_data->>'nome'), ''),
+  nullif(split_part(new.email, '@', 1), ''), 'Usuário')`. Assim nome vazio, usuário sem
+  e-mail (criado pelo painel ou pela API de admin) ou metadado ausente nunca quebram a criação
+  da conta.
 
 ## 7. Telas do CRM
 
@@ -175,13 +177,17 @@ de exemplo". A Server Action chama a função SQL `public.gerar_dados_exemplo()`
 (`security invoker`), que numa **única transação** insere 10 clientes e 15 negócios
 distribuídos entre as etapas, com `posicao` definida explicitamente (0, 1, 2… dentro de cada
 etapa). Se qualquer insert falhar, nada fica gravado e o estado vazio continua disponível para
-tentar de novo. O botão fica desabilitado durante o envio, e a função não faz nada se a conta
-já tiver clientes.
+tentar de novo. O botão fica desabilitado durante o envio. A função começa com
+`pg_advisory_xact_lock(hashtext(auth.uid()::text))` e só depois verifica se a conta já tem
+clientes (e, se tiver, não faz nada). O lock é por usuário e dura até o fim da transação, então
+duas chamadas simultâneas (duas abas, retry) rodam uma depois da outra, e a segunda encontra os
+clientes da primeira.
 
 **Clientes:** tabela ordenada por nome, com busca por nome feita no servidor
 (`?q=` em `searchParams`, aplicado com `.ilike('nome', ...)` direto, nunca com `.or()`
-montado por interpolação). Antes da busca, `\`, `%` e `_` do texto são escapados com `\`,
-para que "_" ou "%" procurem o próprio caractere. Os modais de criar e editar usam o mesmo formulário. Ao
+montado por interpolação). Antes da busca, `\`, `%` e `_` do texto são escapados com `\`, e
+`*` também, porque o PostgREST o trata como `%`. Assim "_", "%" e "*" procuram o próprio
+caractere. Os modais de criar e editar usam o mesmo formulário. Ao
 excluir, a confirmação avisa que os negócios do cliente também serão excluídos.
 
 **Funil:** 5 colunas na ordem Contato → Proposta → Negociação → Fechado → Perdido, cada uma
@@ -194,8 +200,15 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   transação atualiza a `etapa` do negócio e renumera `posicao` (0..n-1) de **todas** as
   linhas da coluna de destino: primeiro os ids na ordem recebida, depois qualquer outro
   negócio da coluna que não veio na lista (por exemplo, criado em outra aba), em
-  `posicao, created_at`. Assim nunca ficam duas posições iguais. A coluna de origem não é
-  renumerada: os buracos não afetam a ordem.
+  `posicao, created_at`. A coluna de origem não é renumerada: os buracos não afetam a ordem.
+  - **Validação:** `id` precisa estar em `idsOrdenadosDestino`. Se o `update` do negócio
+    afetar 0 linhas (negócio excluído em outra aba, ou de outro usuário), a função lança erro.
+    A action devolve "Este negócio não existe mais", e o cliente faz o rollback e mostra o
+    toast.
+  - **Empates:** duas escritas simultâneas na mesma coluna (duas abas) podem, raramente,
+    gerar a mesma `posicao`. Isso é aceito de propósito: a ordem continua determinística pelo
+    desempate em `created_at`, e o próximo arraste naquela coluna renumera tudo. Não há
+    `unique (user_id, etapa, posicao)`.
 - **Novo negócio:** modal com título, valor, cliente (select) e etapa inicial. Entra no fim
   da coluna: `posicao = coalesce(max(posicao), -1) + 1` (em coluna vazia, `max` é nulo e o
   resultado é 0). Se não houver clientes, o modal mostra "Cadastre um
@@ -220,11 +233,15 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
     só estes formatos são aceitos:
     - vazio → erro "Valor é obrigatório". Nunca vira 0;
     - só dígitos: `1500` → 1500;
-    - vírgula decimal, com ou sem ponto de milhar, em que o primeiro grupo tem de 1 a 3
-      dígitos **sem zero à esquerda** e os demais têm exatamente 3: `1500,5`, `1.500,50`,
-      `1.500` → 1500,5 / 1500,50 / 1500. `0.500` e `01.500` são inválidos;
-    - ponto decimal com 1 ou 2 casas e sem vírgula: `1500.5`, `1500.50` → 1500,5 / 1500,50;
-    - qualquer outra coisa → erro "Valor inválido. Use o formato 1.500,50".
+    - formato brasileiro, regex exata
+      `^(0|[1-9]\d*|[1-9]\d{0,2}(\.\d{3})+)(,\d{1,2})?$`: parte inteira sem pontos ou com
+      ponto de milhar (primeiro grupo de 1 a 3 dígitos sem zero à esquerda, demais com 3), e
+      até 2 casas depois da vírgula. Exemplos: `1500`, `1500,5`, `1.500,50`, `1.500`, `0,50`
+      → 1500 / 1500,5 / 1500,50 / 1500 / 0,50;
+    - ponto decimal, regex exata `^(0|[1-9]\d*)\.\d{1,2}$`: `1500.5`, `1500.50`, `0.50` →
+      1500,5 / 1500,50 / 0,50;
+    - qualquer outra coisa → erro "Valor inválido. Use o formato 1.500,50". Exemplos
+      inválidos: `0.500`, `01.500`, `1,999` (mais de 2 casas), `1.50,5`, `1.5000`.
 
     Um ponto seguido de exatamente 3 dígitos é tratado como milhar (`2.500` = 2500), que é a
     leitura brasileira. É uma escolha consciente: quem digitar `2.500` querendo dizer 2,5 vê
@@ -249,7 +266,8 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
 - `lib/metrics.ts`: lista vazia, mistura de etapas, soma de valores decimais.
 - `lib/schemas.ts`: casos válidos e inválidos de cada schema; `parseValorBRL` com todos os
   formatos da seção 8, incluindo vazio, `1.500`, `1500.50`, `1.500,50` e entradas inválidas
-  (`0.500`, `01.500`, `1.50,5`); escape de `%`/`_` da busca.
+  (`0.500`, `01.500`, `1.50,5`, `1,999`), mais `0,50` e `0.50` válidos; escape de `\`, `%`,
+  `_` e `*` da busca.
 
 **Playwright (ponta a ponta)**
 
@@ -260,9 +278,10 @@ aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem ac
   `user_metadata` e `email_confirm: true`, já que a API de admin não confirma o e-mail
   sozinha), faz login pela tela e salva o `storageState` de cada um. Os testes que não são de
   cadastro reutilizam esse estado.
-- `globalTeardown` percorre **todas as páginas** de `auth.admin.listUsers` (`page`/`perPage`,
-  até uma página vir vazia) e apaga com
-  `auth.admin.deleteUser` **todos** cujo e-mail começa com `e2e+`. Isso inclui o usuário
+- `globalTeardown` trabalha em duas etapas. Primeiro percorre **todas as páginas** de
+  `auth.admin.listUsers` (`page`/`perPage`, até uma página vir vazia) e **só coleta** os ids
+  cujo e-mail começa com `e2e+`. Depois apaga esses ids com `auth.admin.deleteUser`. Apagar
+  durante a paginação faria usuários subirem para páginas já lidas e escaparem da limpeza. Isso inclui o usuário
   criado pela tela no cenário 1, e também sobras de execuções interrompidas. Usa
   `SUPABASE_SERVICE_ROLE_KEY`. O cascade remove perfis, clientes e negócios.
 
