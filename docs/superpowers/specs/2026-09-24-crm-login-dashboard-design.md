@@ -12,7 +12,7 @@ com visão geral, cadastro de clientes e funil de vendas (kanban).
 - Cadastro, login, logout e proteção de rotas funcionando.
 - Cada usuário vê e altera somente os próprios dados (garantido pelo banco via RLS).
 - CRUD de clientes e funil com arrastar-e-soltar persistindo no banco.
-- Projeto publicável na Vercel e compreensível para quem está estudando.
+- Projeto publicável no EasyPanel (imagem Docker) e compreensível para quem está estudando.
 
 **Premissas:** dados de exemplo (não é uso real); autenticação por e-mail e senha;
 confirmação de e-mail desligada no Supabase.
@@ -28,7 +28,7 @@ confirmação de e-mail desligada no Supabase.
 | Arrastar e soltar | dnd-kit |
 | Validação | Zod |
 | Testes | Vitest (unidade), Playwright (ponta a ponta) |
-| Deploy | Vercel |
+| Deploy | EasyPanel (imagem Docker, build a partir do Git) |
 
 **Abordagem:** Server Components para leitura de dados e Server Actions para todas as
 escritas. Não há API REST própria. O `proxy.ts` (antigo `middleware.ts`, renomeado no
@@ -36,8 +36,13 @@ Next.js 16) protege as rotas.
 
 **Variáveis de ambiente**
 - `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: usadas pelo app.
-- `SUPABASE_SERVICE_ROLE_KEY`: usada **só** pelos testes E2E para limpeza. Nunca com prefixo
-  `NEXT_PUBLIC_` e nunca configurada na Vercel.
+- `SUPABASE_SERVICE_ROLE_KEY`: usada **só** pelos testes (`tests/db` e `tests/e2e`) para
+  limpeza. Nunca com prefixo `NEXT_PUBLIC_` e nunca configurada no EasyPanel.
+
+As variáveis `NEXT_PUBLIC_*` são embutidas no bundle **durante o build**. No EasyPanel elas
+precisam estar definidas como variáveis de ambiente do serviço **antes** do build, não só em
+tempo de execução. O `next.config.ts` usa `output: 'standalone'`, para a imagem Docker ficar
+pequena e rodar com `node server.js`.
 
 ## 3. Páginas e navegação
 
@@ -103,16 +108,25 @@ app/
   dashboard/clientes/page.tsx
   dashboard/funil/page.tsx
   dashboard/error.tsx
+app/(auth)/actions.ts    entrar, cadastrar, sair
 lib/supabase/            clientes Supabase (server.ts, client.ts, proxy.ts com updateSession)
-lib/metrics.ts           cálculo dos indicadores (função pura)
-lib/schemas.ts           schemas Zod
+lib/etapas.ts            ETAPAS, Etapa, ROTULO_ETAPA
+lib/format.ts            formatarBRL, formatarNumeroBR
+lib/metrics.ts           cálculo dos indicadores (funções puras)
+lib/schemas.ts           parseValorBRL, escaparBusca, schemas Zod
+lib/acoes.ts             EstadoForm, lerCampos, mensagens fixas
+lib/kanban.ts            agrupamento e regras puras do arrastar e soltar
+lib/tipos.ts             Cliente
+lib/auth/rotas.ts        decidirRota (usada pelo proxy)
+lib/auth/erros.ts        traduzirErroAuth
 components/ui/           componentes shadcn
 components/crm/          componentes do CRM (tabela, formulários, kanban, cards)
 app/page.tsx             redireciona para /dashboard
 app/error.tsx            erro genérico para o que escapar do layout do dashboard
 proxy.ts
 supabase/migrations/     SQL de tabelas, RLS e trigger
-tests/unit/, tests/e2e/
+tests/unit/, tests/db/, tests/e2e/
+Dockerfile, .dockerignore
 ```
 
 ## 6. Banco de dados
@@ -206,7 +220,12 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
 - **Ordem:** a consulta usa `order by posicao, created_at, id`. O `id` é o desempate final,
   porque os negócios gerados numa mesma transação (dados de exemplo) têm o mesmo `created_at`.
   Toda ordenação desta seção, inclusive a de dentro de `mover_negocio`, usa esses três campos.
-- **Arrastar:** vale mover entre colunas e reordenar dentro da mesma coluna. Ao soltar, a tela
+- **Arrastar:** o corpo do card abre a edição ao clicar; quem arrasta é um **handle
+  dedicado** (ícone de alça no canto do card), que recebe os listeners do dnd-kit. Sem o
+  handle, o mesmo elemento teria o `onClick` de editar e o `onKeyDown` do sensor de teclado:
+  apertar Enter iniciaria o arraste **e** abriria o modal por cima. Com o handle, o teclado
+  arrasta pelo handle e edita pelo corpo, cada um com o seu foco.
+  Vale mover entre colunas e reordenar dentro da mesma coluna. Ao soltar, a tela
   se atualiza na hora (atualização otimista) e é chamada a Server Action
   `moverNegocio(id, etapaDestino, idsOrdenadosDestino[])`. Ela chama a função SQL
   `public.mover_negocio` (`security invoker`, portanto sujeita ao RLS), que numa única
@@ -243,6 +262,12 @@ com o total em R$ no topo. Os cards mostram título, nome do cliente e valor em 
   da nova coluna** (`coalesce(max(posicao), -1) + 1` na etapa de destino), na mesma
   regra do novo negócio. Se a etapa não mudar, a `posicao` é mantida.
 
+**Limite de linhas:** as telas carregam todos os clientes e negócios da conta, sem paginação.
+O PostgREST tem um teto de linhas por resposta (`max-rows`, 1000 em instalações padrão), então
+acima disso os indicadores passariam a somar só parte dos dados, **sem erro nenhum**. Para o
+tamanho deste projeto de estudo isso não acontece; a paginação está listada em "Fora do
+escopo" (seção 10) de propósito.
+
 **Atualização da tela:** toda Server Action que escreve chama `revalidatePath` na rota
 afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
 
@@ -273,6 +298,11 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
     "R$ 2.500,00" no card, e isso é corrigível pela edição. O campo mostra abaixo dele o valor
     interpretado ("= R$ 2.500,00") enquanto a pessoa digita, para evitar a surpresa.
   - Cadastro: `nome` obrigatório; `email` válido; `senha` com no mínimo 6 caracteres.
+- As Server Actions que recebem só um identificador (`excluirCliente`, `excluirNegocio`)
+  validam o argumento com `z.uuid()` antes de tocar no banco, do mesmo jeito que
+  `moverNegocio` faz com o `moverSchema`. Server Actions são endpoints HTTP públicos: sem
+  isso, um valor qualquer vira erro cru do Postgres. O RLS continua sendo a garantia de
+  acesso; a validação só mantém a resposta previsível.
 - Os erros do Supabase Auth são traduzidos pelo `error.code`, não pela mensagem em inglês:
   `invalid_credentials` → "E-mail ou senha incorretos"; `user_already_exists` → "Este e-mail
   já está cadastrado". Qualquer outro código vira uma mensagem genérica.
@@ -294,16 +324,29 @@ afetada e em `/dashboard`, para que os indicadores fiquem sempre corretos.
   (`0.500`, `01.500`, `1.50,5`, `1,999`), mais `0,50` e `0.50` válidos; escape de `\`, `%`
   e `_` da busca.
 
+**Vitest (banco), projeto `db`**
+
+Roda contra o Supabase local, com as migrations aplicadas, e cobre o que não dá para testar
+com função pura: o trigger de perfil (nome do metadado, nome em branco, usuário sem e-mail),
+o RLS (B não lê nem altera dados de A), a FK composta, os cascades, os `check` de `valor` e
+`etapa`, e as funções `mover_negocio` e `gerar_dados_exemplo` (renumeração, coluna vazia,
+lista desatualizada, `P0002`, chamadas simultâneas). Cada teste cria os próprios usuários e
+os apaga no fim.
+
 **Playwright (ponta a ponta)**
 
 *Ambiente:* Supabase local (`supabase start`, com as migrations de `supabase/migrations/`
 aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem acumular lixo.
 - E-mails únicos por execução: `e2e+<timestamp>-<n>@exemplo.com`.
-- `globalSetup` cria os usuários A e B com `auth.admin.createUser` (com `nome` em
+- Um **projeto de setup** do Playwright (`auth.setup.ts`, padrão atual, no lugar do
+  `globalSetup`) cria os usuários A e B com `auth.admin.createUser` (com `nome` em
   `user_metadata` e `email_confirm: true`, já que a API de admin não confirma o e-mail
   sozinha), faz login pela tela e salva o `storageState` de cada um. Os testes que não são de
   cadastro reutilizam esse estado.
-- `globalTeardown` trabalha em duas etapas. Primeiro percorre **todas as páginas** de
+- `globalTeardown` **primeiro confere que está apontando para o Supabase local**: se
+  `NEXT_PUBLIC_SUPABASE_URL` não for `127.0.0.1` nem `localhost`, ele aborta sem apagar nada.
+  A limpeza é por prefixo de e-mail, então, apontada para um projeto hospedado por engano,
+  apagaria contas reais. Depois trabalha em duas etapas. Primeiro percorre **todas as páginas** de
   `auth.admin.listUsers` (`page`/`perPage`, até uma página vir vazia) e **só coleta** os ids
   cujo e-mail começa com `e2e+`. Depois apaga esses ids com `auth.admin.deleteUser`. Apagar
   durante a paginação faria usuários subirem para páginas já lidas e escaparem da limpeza. Isso inclui o usuário
@@ -325,4 +368,5 @@ aplicadas), para não esbarrar no limite de cadastros do projeto na nuvem nem ac
 ## 10. Fora do escopo
 
 Login social, recuperação de senha, confirmação de e-mail, equipes e dados compartilhados,
-histórico de atividades, exportação CSV, tema escuro configurável.
+histórico de atividades, exportação CSV, tema escuro configurável, paginação das listas
+(clientes, negócios e indicadores carregam tudo de uma vez).

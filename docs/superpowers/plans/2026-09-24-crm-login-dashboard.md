@@ -12,9 +12,10 @@
 
 ## Restrições globais
 
-- Framework: **Next.js 16** (App Router). O arquivo de rotas protegidas é `proxy.ts` com `export async function proxy`, **nunca** `middleware.ts`.
+- Framework: **Next.js 16** (App Router), com a major fixada na criação do projeto (`create-next-app@16`). O arquivo de rotas protegidas é `proxy.ts` com `export async function proxy`, **nunca** `middleware.ts` — `proxy.ts` só existe a partir do 16, então uma major diferente quebra o plano inteiro.
+- Deploy: **EasyPanel**, a partir de uma imagem Docker construída do repositório Git. Nada de adaptador de plataforma; `next.config.ts` usa `output: 'standalone'`.
 - Variáveis do app: `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
-- `SUPABASE_SERVICE_ROLE_KEY` é usada **só** em testes (`tests/db`, `tests/e2e`). Nunca com prefixo `NEXT_PUBLIC_`, nunca importada em `app/`, `components/` ou `lib/`, nunca configurada na Vercel.
+- `SUPABASE_SERVICE_ROLE_KEY` é usada **só** em testes (`tests/db`, `tests/e2e`). Nunca com prefixo `NEXT_PUBLIC_`, nunca importada em `app/`, `components/` ou `lib/`, nunca configurada no EasyPanel.
 - O usuário é validado com `supabase.auth.getClaims()`, **nunca** com `getSession()`.
 - Etapas, nesta ordem: `contato`, `proposta`, `negociacao`, `fechado`, `perdido`. Rótulos: Contato, Proposta, Negociação, Fechado, Perdido.
 - Ordenação de negócios: sempre `posicao, created_at, id`.
@@ -102,6 +103,8 @@ tests/db/env.ts, tests/db/helpers.ts, tests/db/*.test.ts
 tests/e2e/helpers.ts, auth.setup.ts, global-teardown.ts, *.spec.ts
 vitest.config.mts
 playwright.config.ts
+next.config.ts                  (modificado) output: 'standalone'
+Dockerfile, .dockerignore       imagem usada pelo EasyPanel
 .env.example
 README.md
 ```
@@ -127,8 +130,10 @@ README.md
 A pasta já tem `docs/` e `.git/`, e o `create-next-app` aceita os dois.
 
 ```bash
-npx create-next-app@latest . --ts --tailwind --eslint --app --no-src-dir --import-alias "@/*" --use-npm --yes
+npx create-next-app@16 . --ts --tailwind --eslint --app --no-src-dir --import-alias "@/*" --use-npm --yes
 ```
+
+A major vai fixa no comando de propósito: com `@latest`, o dia em que sair o Next 17 o plano passa a gerar um projeto sem `proxy.ts` e quebra em silêncio na Tarefa 6.
 
 Esperado: termina com "Success!", e `app/page.tsx`, `app/layout.tsx` e `package.json` existem. Confira em `package.json` que `next` está em `16.x`.
 
@@ -147,7 +152,7 @@ npx shadcn@latest init -d
 npx shadcn@latest add button input label card table dialog alert-dialog sonner chart badge
 ```
 
-Se o CLI perguntar qual biblioteca de primitivas usar, escolha **Radix UI**, porque este plano usa `asChild`. Esperado: arquivos em `components/ui/` e `lib/utils.ts` com `cn`.
+Se o CLI perguntar qual biblioteca de primitivas usar, escolha **Radix UI**, porque este plano usa `asChild`. Esperado: arquivos em `components/ui/` e `lib/utils.ts` com `cn`, e `lucide-react` no `package.json` (o shadcn instala; a Tarefa 12 usa o ícone `GripVertical`).
 
 - [ ] **Passo 4: Configurar o Vitest com dois projetos**
 
@@ -210,7 +215,7 @@ Crie `.env.example`:
 ```
 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=cole-aqui-a-publishable-key
-# Só para testes (tests/db e tests/e2e). Nunca usar no app nem na Vercel.
+# Só para testes (tests/db e tests/e2e). Nunca usar no app nem no EasyPanel.
 SUPABASE_SERVICE_ROLE_KEY=cole-aqui-a-service-role-key
 ```
 
@@ -815,6 +820,13 @@ Confira em `supabase/config.toml` que, na seção `[auth.email]`, está `enable_
 import { config } from 'dotenv';
 
 config({ path: '.env.local' });
+
+// Mesmo motivo do teardown do Playwright: estes testes criam e apagam usuários com a
+// service role, então só podem rodar contra o Supabase local.
+const host = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL!).hostname;
+if (host !== '127.0.0.1' && host !== 'localhost') {
+  throw new Error(`test:db só roda contra o Supabase local. NEXT_PUBLIC_SUPABASE_URL aponta para "${host}".`);
+}
 ```
 
 `tests/db/helpers.ts`:
@@ -1512,13 +1524,12 @@ export async function updateSession(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet, headers?: Record<string, string>) {
+        setAll(cookiesToSet) {
           // (a) a página desta mesma requisição já lê o token renovado
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
           resposta = NextResponse.next({ request });
           // (b) o navegador recebe os cookies novos
           cookiesToSet.forEach(({ name, value, options }) => resposta.cookies.set(name, value, options));
-          Object.entries(headers ?? {}).forEach(([k, v]) => resposta.headers.set(k, v));
         },
       },
     },
@@ -1570,7 +1581,7 @@ npm test
 npm run build
 ```
 
-Esperado: os testes passam e o build termina sem erro de tipo. Se o `setAll` reclamar do segundo parâmetro, a versão instalada do `@supabase/ssr` não o envia. Nesse caso, remova o parâmetro `headers` e a linha `Object.entries(...)`.
+Esperado: os testes passam e o build termina sem erro de tipo.
 
 - [ ] **Passo 7: Commit**
 
@@ -2225,6 +2236,7 @@ git commit -m "feat(dashboard): visão geral com indicadores, gráfico e dados d
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
 import { lerCampos, SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
 import { clienteSchema, errosDeCampo } from '@/lib/schemas';
 import { createClient, obterUsuario } from '@/lib/supabase/server';
@@ -2253,6 +2265,8 @@ export async function salvarCliente(_prev: EstadoForm, fd: FormData): Promise<Es
 
 export async function excluirCliente(id: string): Promise<EstadoForm> {
   if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  // Server Action é um endpoint HTTP público: valide o argumento, como moverNegocio faz.
+  if (!z.uuid().safeParse(id).success) return { ok: false, mensagem: 'Não foi possível excluir o cliente' };
   const supabase = await createClient();
   const { error } = await supabase.from('clientes').delete().eq('id', id);
   if (error) return { ok: false, mensagem: 'Não foi possível excluir o cliente' };
@@ -2598,6 +2612,7 @@ Esperado: PASS.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
 import { lerCampos, NEGOCIO_NAO_EXISTE, SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
 import type { Etapa } from '@/lib/etapas';
 import { errosDeCampo, negocioSchema } from '@/lib/schemas';
@@ -2651,6 +2666,7 @@ export async function salvarNegocio(_prev: EstadoForm, fd: FormData): Promise<Es
 
 export async function excluirNegocio(id: string): Promise<EstadoForm> {
   if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  if (!z.uuid().safeParse(id).success) return { ok: false, mensagem: NEGOCIO_NAO_EXISTE };
   const supabase = await createClient();
   const { error } = await supabase.from('negocios').delete().eq('id', id);
   if (error) return { ok: false, mensagem: 'Não foi possível excluir o negócio' };
@@ -3144,13 +3160,17 @@ export async function moverNegocio(id: string, etapa: Etapa, ids: string[]): Pro
 
 - [ ] **Passo 5: Ligar o dnd-kit nos componentes**
 
-Substitua `components/crm/card-negocio.tsx`:
+Substitua `components/crm/card-negocio.tsx`. O arraste fica num **handle** (a alça à
+esquerda), e não no card inteiro: se o mesmo elemento tivesse o `onClick` de editar e o
+`onKeyDown` do `KeyboardSensor`, apertar Enter começaria o arraste **e** abriria o modal por
+cima dele. Com o handle, cada coisa tem o seu alvo e o seu foco.
 
 ```tsx
 'use client';
 
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { GripVertical } from 'lucide-react';
 import { formatarBRL } from '@/lib/format';
 import type { NegocioCard } from '@/lib/kanban';
 import { cn } from '@/lib/utils';
@@ -3161,17 +3181,27 @@ export function CardNegocio({ negocio, aoAbrir }: { negocio: NegocioCard; aoAbri
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      {...attributes}
-      {...listeners}
-      onClick={() => aoAbrir(negocio)}
       className={cn(
-        'cursor-grab touch-none rounded-md border bg-background p-3 text-sm shadow-sm',
+        'flex items-start gap-2 rounded-md border bg-background p-3 text-sm shadow-sm',
         isDragging && 'opacity-50',
       )}
     >
-      <p className="font-medium">{negocio.titulo}</p>
-      <p className="text-muted-foreground">{negocio.clienteNome}</p>
-      <p className="mt-1 font-semibold">{formatarBRL(negocio.valor)}</p>
+      {/* só o handle arrasta */}
+      <button
+        type="button"
+        aria-label={`Arrastar ${negocio.titulo}`}
+        className="mt-0.5 cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="size-4" aria-hidden />
+      </button>
+      {/* o corpo abre a edição, por clique ou por teclado */}
+      <button type="button" onClick={() => aoAbrir(negocio)} className="flex-1 text-left">
+        <span className="block font-medium">{negocio.titulo}</span>
+        <span className="block text-muted-foreground">{negocio.clienteNome}</span>
+        <span className="mt-1 block font-semibold">{formatarBRL(negocio.valor)}</span>
+      </button>
     </div>
   );
 }
@@ -3234,7 +3264,7 @@ import {
   closestCorners, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent,
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
-import { useRef, useState, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { toast } from 'sonner';
 import { moverNegocio } from '@/app/dashboard/funil/actions';
 import { ColunaKanban } from '@/components/crm/coluna-kanban';
@@ -3251,22 +3281,14 @@ export function Kanban({ negocios, clientes }: { negocios: NegocioCard[]; client
   const [colunas, setColunas] = useState(() => agruparPorEtapa(negocios));
   const [editando, setEditando] = useState<NegocioCard | 'novo' | null>(null);
   const [, iniciar] = useTransition();
-  const fimDoArraste = useRef(0);
 
   const sensores = useSensors(
-    // distância mínima: um clique simples abre a edição em vez de arrastar
+    // distância mínima: evita iniciar um arraste num toque acidental no handle
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  function abrir(n: NegocioCard) {
-    // ignora o clique que o navegador dispara logo após soltar um card
-    if (Date.now() - fimDoArraste.current < 250) return;
-    setEditando(n);
-  }
-
   function aoSoltar({ active, over }: DragEndEvent) {
-    fimDoArraste.current = Date.now();
     if (!over) return;
     const id = String(active.id);
     const destino = localizarDestino(colunas, String(over.id));
@@ -3298,7 +3320,7 @@ export function Kanban({ negocios, clientes }: { negocios: NegocioCard[]; client
       <DndContext id="kanban" sensors={sensores} collisionDetection={closestCorners} onDragEnd={aoSoltar}>
         <div className="grid gap-4 md:grid-cols-5">
           {ETAPAS.map((etapa) => (
-            <ColunaKanban key={etapa} etapa={etapa} negocios={colunas[etapa]} aoAbrir={abrir} />
+            <ColunaKanban key={etapa} etapa={etapa} negocios={colunas[etapa]} aoAbrir={setEditando} />
           ))}
         </div>
       </DndContext>
@@ -3325,10 +3347,11 @@ export function Kanban({ negocios, clientes }: { negocios: NegocioCard[]; client
 - [ ] **Passo 6: Verificar manualmente**
 
 Rode `npm run dev` e confira:
-1. Arrastar um card para outra coluna faz o card mudar na hora. Depois de recarregar, ele continua lá.
+1. Arrastar um card **pela alça** para outra coluna faz o card mudar na hora. Depois de recarregar, ele continua lá.
 2. Reordenar dentro da coluna e recarregar mantém a ordem nova.
 3. Arrastar para uma coluna vazia funciona.
-4. Um clique simples no card abre a edição.
+4. Um clique no corpo do card abre a edição, e arrastar não abre o modal.
+5. Só com o teclado: Tab até a alça, Espaço para pegar, setas para mover, Espaço para soltar — e o modal **não** abre. Tab até o corpo do card e Enter abre a edição.
 5. Para testar a falha, pare o Supabase (`npx supabase stop`) e arraste um card. Ele deve voltar ao lugar, com um toast de erro. Depois religue com `npx supabase start`.
 
 Rode: `npm test && npm run build`
@@ -3435,14 +3458,27 @@ export const URL_BASE = 'http://localhost:3000';
 export const SENHA = 'senha-teste-123';
 const opcoes = { auth: { persistSession: false, autoRefreshToken: false } };
 
+export const URL_SUPABASE = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+
+// Os testes criam e apagam usuários com a service role. Se o .env.local apontar para um
+// Supabase hospedado, isso mexe em dados reais: então só rodamos contra o Supabase local.
+export function exigirSupabaseLocal() {
+  const host = new URL(URL_SUPABASE).hostname;
+  if (host !== '127.0.0.1' && host !== 'localhost') {
+    throw new Error(
+      `Os testes só rodam contra o Supabase local. NEXT_PUBLIC_SUPABASE_URL aponta para "${host}".`,
+    );
+  }
+}
+
 export const admin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  URL_SUPABASE,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   opcoes,
 );
 
 export function clienteAnonimo() {
-  return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!, opcoes);
+  return createClient(URL_SUPABASE, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!, opcoes);
 }
 
 let contador = 0;
@@ -3479,7 +3515,10 @@ export async function entrarPelaTela(page: Page, email: string) {
 
 ```ts
 import { test as setup } from '@playwright/test';
-import { admin, emailUnico, entrarPelaTela, estado, salvarUsuarios, SENHA, type UsuarioTeste } from './helpers';
+import {
+  admin, emailUnico, entrarPelaTela, estado, exigirSupabaseLocal, salvarUsuarios, SENHA,
+  type UsuarioTeste,
+} from './helpers';
 
 async function criar(nome: string): Promise<UsuarioTeste> {
   const email = emailUnico(nome);
@@ -3494,6 +3533,7 @@ async function criar(nome: string): Promise<UsuarioTeste> {
 }
 
 setup('cria os usuários A e B e salva as sessões', async ({ browser }) => {
+  exigirSupabaseLocal();
   const usuarios = { a: await criar('A'), b: await criar('B') };
   salvarUsuarios(usuarios);
   for (const quem of ['a', 'b'] as const) {
@@ -3509,11 +3549,15 @@ setup('cria os usuários A e B e salva as sessões', async ({ browser }) => {
 `tests/e2e/global-teardown.ts`:
 
 ```ts
-import { admin } from './helpers';
+import { admin, exigirSupabaseLocal } from './helpers';
 
 // Duas etapas: primeiro coleta todos os ids e só depois apaga.
 // Apagar durante a paginação faria usuários pularem de página e escaparem da limpeza.
 export default async function globalTeardown() {
+  // A limpeza é por prefixo de e-mail e usa a service role: apontada para um Supabase
+  // hospedado por engano, apagaria contas de verdade. Melhor falhar do que apagar.
+  exigirSupabaseLocal();
+
   const ids: string[] = [];
   for (let page = 1; ; page++) {
     const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 100 });
@@ -3601,12 +3645,13 @@ test('cria cliente e negócio, move o negócio e a mudança persiste', async ({ 
 
   const contato = page.getByTestId('coluna-contato');
   const proposta = page.getByTestId('coluna-proposta');
-  const card = contato.getByText(titulo);
-  await expect(card).toBeVisible();
+  await expect(contato.getByText(titulo)).toBeVisible();
 
-  // arrastar com o mouse, em passos, para o dnd-kit reconhecer o movimento
+  // arrastar pela alça (só ela tem os listeners do dnd-kit), em passos, para o dnd-kit
+  // reconhecer o movimento
+  const alca = contato.getByRole('button', { name: `Arrastar ${titulo}` });
   const alvo = (await proposta.boundingBox())!;
-  await card.hover();
+  await alca.hover();
   await page.mouse.down();
   await page.mouse.move(alvo.x + alvo.width / 2, alvo.y + alvo.height / 2, { steps: 15 });
   const gravacao = page.waitForResponse(
@@ -3692,18 +3737,92 @@ git commit -m "test(e2e): cadastro, proteção de rotas, funil e isolamento entr
 
 ---
 
-### Tarefa 15: README e publicação na Vercel
+### Tarefa 15: Imagem Docker, README e publicação no EasyPanel
 
 **Arquivos:**
+- Criar: `Dockerfile`, `.dockerignore`
+- Modificar: `next.config.ts`
 - Criar/Substituir: `README.md`
 
-- [ ] **Passo 1: Escrever o README**
+- [ ] **Passo 1: `output: 'standalone'` no `next.config.ts`**
+
+```ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  // Gera .next/standalone: a imagem carrega só o necessário e roda com `node server.js`.
+  output: 'standalone',
+};
+
+export default nextConfig;
+```
+
+- [ ] **Passo 2: `Dockerfile` e `.dockerignore`**
+
+As variáveis `NEXT_PUBLIC_*` entram no bundle **durante o build**, então precisam chegar como
+`ARG` no estágio de build — não basta defini-las só em tempo de execução. No EasyPanel, isso
+significa cadastrá-las nas variáveis de ambiente do serviço **antes** do primeiro build.
+
+`Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+`.dockerignore`:
+
+```
+node_modules
+.next
+.git
+docs
+supabase/.temp
+supabase/.branches
+tests
+playwright-report
+test-results
+.env*
+!.env.example
+```
+
+- [ ] **Passo 3: Escrever o README**
 
 ````markdown
 # Mini CRM — projeto de estudo
 
 Login com e-mail e senha + dashboard de CRM (visão geral, clientes e funil kanban).
 Stack: Next.js 16, Supabase, Tailwind + shadcn/ui, dnd-kit, Zod, Vitest e Playwright.
+Publicado no EasyPanel a partir do `Dockerfile` da raiz.
 
 ## Rodar localmente
 
@@ -3724,9 +3843,12 @@ npm run test:db   # banco: RLS, trigger e funções SQL (precisa do Supabase loc
 npm run test:e2e  # ponta a ponta com Playwright (precisa do Supabase local)
 ```
 
-## Publicar na Vercel
+## Publicar no EasyPanel
 
-1. Crie um projeto em https://supabase.com. Em Authentication → Sign In / Providers → Email,
+O app vai como imagem Docker (`Dockerfile` na raiz, Next.js em `output: 'standalone'`).
+
+1. **Banco:** crie um projeto em https://supabase.com — ou suba um Supabase self-hosted no
+   próprio EasyPanel. Em Authentication → Sign In / Providers → Email,
    **desligue "Confirm email"**.
 2. Envie as migrations para ele:
    ```bash
@@ -3734,11 +3856,19 @@ npm run test:e2e  # ponta a ponta com Playwright (precisa do Supabase local)
    npx supabase link --project-ref <id-do-projeto>
    npx supabase db push
    ```
-3. Importe o repositório na Vercel e configure **só** estas variáveis:
-   `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-   (em Project Settings → API Keys do Supabase).
-   **Nunca** configure `SUPABASE_SERVICE_ROLE_KEY` na Vercel.
-4. Faça o deploy.
+3. No EasyPanel, crie um **App** no seu projeto e aponte a origem para este repositório Git
+   (branch `main`). Em **Build**, escolha **Dockerfile** (`./Dockerfile`).
+4. Em **Environment**, cadastre **só** estas duas variáveis, **antes do primeiro build**:
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=...
+   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
+   ```
+   (estão em Project Settings → API Keys do Supabase). Elas são embutidas no bundle durante o
+   build, por isso precisam existir antes dele — se você mudá-las depois, refaça o deploy.
+   **Nunca** cadastre `SUPABASE_SERVICE_ROLE_KEY` aqui: ela ignora o RLS e só é usada pelos
+   testes locais.
+5. Em **Domains**, exponha a porta **3000** e ative o HTTPS (Let's Encrypt).
+6. Clique em **Deploy**. Para acompanhar, use a aba Logs do serviço.
 
 ## Como a segurança funciona
 
@@ -3748,20 +3878,22 @@ npm run test:e2e  # ponta a ponta com Playwright (precisa do Supabase local)
   `(cliente_id, user_id)` que impede ligar um negócio ao cliente de outra pessoa.
 ````
 
-- [ ] **Passo 2: Verificação final**
+- [ ] **Passo 4: Verificação final**
 
 ```bash
 npm test
 npm run test:db
 npm run test:e2e
 npm run build
+docker build -t mini-crm --build-arg NEXT_PUBLIC_SUPABASE_URL=http://exemplo --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=exemplo .
 ```
 
-Esperado: tudo passa.
+Esperado: tudo passa e a imagem é construída sem erro. (Os valores de exemplo no `docker build`
+só provam que a imagem monta; o deploy real usa os valores do EasyPanel.)
 
-- [ ] **Passo 3: Commit**
+- [ ] **Passo 5: Commit**
 
 ```bash
-git add README.md
-git commit -m "docs: README com setup local, testes e deploy na Vercel"
+git add README.md Dockerfile .dockerignore next.config.ts
+git commit -m "feat: Dockerfile standalone e README com deploy no EasyPanel"
 ```
