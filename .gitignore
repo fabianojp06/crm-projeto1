@@ -47,3 +47,6 @@ next-env.d.ts
 # supabase
 /supabase/.temp
 /supabase/.branches
+
+# skills (symlinks gerados a partir de .agents/skills)
+/.claude/skills
