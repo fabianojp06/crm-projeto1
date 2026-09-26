@@ -3,9 +3,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { lerCampos, NEGOCIO_NAO_EXISTE, SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
+import { FALHA_MOVER, lerCampos, NEGOCIO_NAO_EXISTE, SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
 import type { Etapa } from '@/lib/etapas';
-import { errosDeCampo, negocioSchema } from '@/lib/schemas';
+import { mensagemErroMover } from '@/lib/kanban';
+import { errosDeCampo, moverSchema, negocioSchema } from '@/lib/schemas';
 import { createClient, obterUsuario } from '@/lib/supabase/server';
 
 function revalidar() {
@@ -60,6 +61,24 @@ export async function excluirNegocio(id: string): Promise<EstadoForm> {
   const supabase = await createClient();
   const { error } = await supabase.from('negocios').delete().eq('id', id);
   if (error) return { ok: false, mensagem: 'Não foi possível excluir o negócio' };
+  revalidar();
+  return { ok: true };
+}
+
+export async function moverNegocio(id: string, etapa: Etapa, ids: string[]): Promise<EstadoForm> {
+  if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  const r = moverSchema.safeParse({ id, etapa, ids });
+  if (!r.success) return { ok: false, mensagem: FALHA_MOVER };
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc('mover_negocio', {
+    p_id: r.data.id,
+    p_etapa: r.data.etapa,
+    p_ids: r.data.ids,
+  });
+  // Decide pelo código do erro, nunca pelo texto.
+  if (error) return { ok: false, mensagem: mensagemErroMover(error.code) };
+
   revalidar();
   return { ok: true };
 }
