@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { excluirNegocio, salvarNegocio } from '@/app/dashboard/funil/actions';
 import { Campo } from '@/components/crm/campo';
 import { ConfirmarExclusao } from '@/components/crm/confirmar-exclusao';
+import { useSessaoExpirada } from '@/components/crm/usar-sessao';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,9 +30,11 @@ export function FormNegocio({
 }) {
   const [estado, acao, pendente] = useActionState(salvarNegocio, ESTADO_INICIAL);
   const [excluindo, iniciar] = useTransition();
+  const encaminharSeExpirou = useSessaoExpirada();
   const [valorTexto, setValorTexto] = useState(negocio ? formatarNumeroBR(negocio.valor) : '');
 
   useEffect(() => {
+    if (encaminharSeExpirou(estado)) return;
     if (estado.ok) {
       toast.success('Negócio salvo');
       aoConcluir();
@@ -56,6 +59,7 @@ export function FormNegocio({
     iniciar(async () => {
       try {
         const r = await excluirNegocio(negocio.id);
+        if (encaminharSeExpirou(r)) return;
         if (r.ok) {
           toast.success('Negócio excluído');
           aoConcluir();

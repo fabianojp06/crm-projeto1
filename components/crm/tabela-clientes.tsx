@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { excluirCliente } from '@/app/dashboard/clientes/actions';
 import { ConfirmarExclusao } from '@/components/crm/confirmar-exclusao';
 import { FormCliente } from '@/components/crm/form-cliente';
+import { useSessaoExpirada } from '@/components/crm/usar-sessao';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
@@ -15,11 +16,13 @@ import type { Cliente } from '@/lib/tipos';
 export function TabelaClientes({ clientes }: { clientes: Cliente[] }) {
   const [editando, setEditando] = useState<Cliente | 'novo' | null>(null);
   const [excluindo, iniciar] = useTransition();
+  const encaminharSeExpirou = useSessaoExpirada();
 
   function excluir(c: Cliente) {
     iniciar(async () => {
       try {
         const r = await excluirCliente(c.id);
+        if (encaminharSeExpirou(r)) return;
         if (r.ok) toast.success('Cliente excluído');
         else toast.error(r.mensagem);
       } catch {

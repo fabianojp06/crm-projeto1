@@ -4,14 +4,17 @@ import { useActionState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { salvarCliente } from '@/app/dashboard/clientes/actions';
 import { Campo } from '@/components/crm/campo';
+import { useSessaoExpirada } from '@/components/crm/usar-sessao';
 import { Button } from '@/components/ui/button';
 import { ESTADO_INICIAL } from '@/lib/acoes';
 import type { Cliente } from '@/lib/tipos';
 
 export function FormCliente({ cliente, aoConcluir }: { cliente?: Cliente; aoConcluir: () => void }) {
   const [estado, acao, pendente] = useActionState(salvarCliente, ESTADO_INICIAL);
+  const encaminharSeExpirou = useSessaoExpirada();
 
   useEffect(() => {
+    if (encaminharSeExpirou(estado)) return;
     if (estado.ok) {
       toast.success('Cliente salvo');
       aoConcluir();

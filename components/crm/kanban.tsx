@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { moverNegocio } from '@/app/dashboard/funil/actions';
 import { ColunaKanban } from '@/components/crm/coluna-kanban';
 import { FormNegocio } from '@/components/crm/form-negocio';
+import { useSessaoExpirada } from '@/components/crm/usar-sessao';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { FALHA_MOVER } from '@/lib/acoes';
@@ -21,6 +22,7 @@ export function Kanban({ negocios, clientes }: { negocios: NegocioCard[]; client
   const [colunas, setColunas] = useState(() => agruparPorEtapa(negocios));
   const [editando, setEditando] = useState<NegocioCard | 'novo' | null>(null);
   const [, iniciar] = useTransition();
+  const encaminharSeExpirou = useSessaoExpirada();
 
   const sensores = useSensors(
     // distância mínima: evita iniciar um arraste num toque acidental no handle
@@ -41,6 +43,7 @@ export function Kanban({ negocios, clientes }: { negocios: NegocioCard[]; client
     iniciar(async () => {
       try {
         const r = await moverNegocio(id, destino.etapa, resultado.idsDestino);
+        if (encaminharSeExpirou(r)) return;
         if (!r.ok) {
           setColunas(anterior);
           toast.error(r.mensagem);

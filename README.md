@@ -32,7 +32,10 @@ O app vai como imagem Docker (`Dockerfile` na raiz, Next.js em `output: 'standal
 
 1. **Banco:** crie um projeto em https://supabase.com — ou suba um Supabase self-hosted no
    próprio EasyPanel. Em Authentication → Sign In / Providers → Email,
-   **desligue "Confirm email"**.
+   **desligue "Confirm email"**. Num projeto hospedado essa opção vem **ligada** por padrão,
+   e é a causa mais provável de estranheza no primeiro deploy: com ela ligada o cadastro não
+   devolve sessão. O app trata isso mostrando "Confirme o e-mail que enviamos" em vez de
+   fingir que entrou — mas, para o fluxo deste projeto de estudo, o certo é desligar.
 2. Envie as migrations para ele:
    ```bash
    npx supabase login

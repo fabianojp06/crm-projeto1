@@ -14,7 +14,11 @@ export function FormCadastro() {
       <Campo nome="nome" rotulo="Nome" autoComplete="name" padrao={estado.valores?.nome} erros={estado.erros?.nome} />
       <Campo nome="email" rotulo="E-mail" tipo="email" autoComplete="email" padrao={estado.valores?.email} erros={estado.erros?.email} />
       <Campo nome="senha" rotulo="Senha" tipo="password" autoComplete="new-password" erros={estado.erros?.senha} />
-      {estado.mensagem && <p role="alert" className="text-sm text-destructive">{estado.mensagem}</p>}
+      {estado.mensagem && (
+        <p role="alert" className={estado.ok ? 'text-sm' : 'text-sm text-destructive'}>
+          {estado.mensagem}
+        </p>
+      )}
       <Button type="submit" className="w-full" disabled={pendente}>
         {pendente ? 'Criando conta…' : 'Criar conta'}
       </Button>

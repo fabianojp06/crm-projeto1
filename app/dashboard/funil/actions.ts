@@ -3,7 +3,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { FALHA_MOVER, lerCampos, NEGOCIO_NAO_EXISTE, SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
+import { FALHA_MOVER, lerCampos, NEGOCIO_NAO_EXISTE, ESTADO_SESSAO_EXPIRADA, type EstadoForm } from '@/lib/acoes';
 import type { Etapa } from '@/lib/etapas';
 import { mensagemErroMover } from '@/lib/kanban';
 import { errosDeCampo, moverSchema, negocioSchema } from '@/lib/schemas';
@@ -28,7 +28,7 @@ async function proximaPosicao(supabase: SupabaseClient, etapa: Etapa): Promise<n
 }
 
 export async function salvarNegocio(_prev: EstadoForm, fd: FormData): Promise<EstadoForm> {
-  if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  if (!(await obterUsuario())) return ESTADO_SESSAO_EXPIRADA;
   const valores = lerCampos(fd, ['id', 'titulo', 'valor', 'cliente_id', 'etapa']);
   const r = negocioSchema.safeParse(valores);
   if (!r.success) return { ok: false, erros: errosDeCampo(r.error), valores };
@@ -44,7 +44,15 @@ export async function salvarNegocio(_prev: EstadoForm, fd: FormData): Promise<Es
       atual.etapa === r.data.etapa
         ? r.data
         : { ...r.data, posicao: await proximaPosicao(supabase, r.data.etapa) };
-    ({ error: erro } = await supabase.from('negocios').update(dados).eq('id', valores.id));
+    // .select() para saber quantas linhas casaram: sem isso, um negócio apagado em
+    // outra aba faria o update afetar 0 linhas e mesmo assim dizer "salvo".
+    const { data, error } = await supabase
+      .from('negocios')
+      .update(dados)
+      .eq('id', valores.id)
+      .select('id');
+    if (!error && !data?.length) return { ok: false, mensagem: NEGOCIO_NAO_EXISTE, valores };
+    erro = error;
   } else {
     const posicao = await proximaPosicao(supabase, r.data.etapa);
     ({ error: erro } = await supabase.from('negocios').insert({ ...r.data, posicao }));
@@ -56,17 +64,18 @@ export async function salvarNegocio(_prev: EstadoForm, fd: FormData): Promise<Es
 }
 
 export async function excluirNegocio(id: string): Promise<EstadoForm> {
-  if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  if (!(await obterUsuario())) return ESTADO_SESSAO_EXPIRADA;
   if (!z.uuid().safeParse(id).success) return { ok: false, mensagem: NEGOCIO_NAO_EXISTE };
   const supabase = await createClient();
-  const { error } = await supabase.from('negocios').delete().eq('id', id);
+  const { data, error } = await supabase.from('negocios').delete().eq('id', id).select('id');
   if (error) return { ok: false, mensagem: 'Não foi possível excluir o negócio' };
+  if (!data?.length) return { ok: false, mensagem: NEGOCIO_NAO_EXISTE };
   revalidar();
   return { ok: true };
 }
 
 export async function moverNegocio(id: string, etapa: Etapa, ids: string[]): Promise<EstadoForm> {
-  if (!(await obterUsuario())) return { ok: false, mensagem: SESSAO_EXPIRADA };
+  if (!(await obterUsuario())) return ESTADO_SESSAO_EXPIRADA;
   const r = moverSchema.safeParse({ id, etapa, ids });
   if (!r.success) return { ok: false, mensagem: FALHA_MOVER };
 
