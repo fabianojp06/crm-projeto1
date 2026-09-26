@@ -43,7 +43,7 @@ O app vai como imagem Docker (`Dockerfile` na raiz, Next.js em `output: 'standal
    npx supabase db push
    ```
 3. No EasyPanel, crie um **App** no seu projeto e aponte a origem para este repositório Git
-   (branch `main`). Em **Build**, escolha **Dockerfile** (`./Dockerfile`).
+   (branch `master`). Em **Build**, escolha **Dockerfile** (`./Dockerfile`).
 4. Em **Environment**, cadastre **só** estas duas variáveis, **antes do primeiro build**:
    ```
    NEXT_PUBLIC_SUPABASE_URL=...

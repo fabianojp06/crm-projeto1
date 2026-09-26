@@ -9,3 +9,6 @@ playwright-report
 test-results
 .env*
 !.env.example
+# .env é o arquivo que o EasyPanel gera no build com as variáveis de Ambiente;
+# .env.local (com a service role key) continua fora da imagem.
+!.env

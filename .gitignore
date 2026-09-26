@@ -50,3 +50,6 @@ next-env.d.ts
 
 # skills (symlinks gerados a partir de .agents/skills)
 /.claude/skills
+
+# capturas de tela locais (podem conter tokens do EasyPanel)
+/erros
