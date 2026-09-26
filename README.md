@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Mini CRM — projeto de estudo
 
-## Getting Started
+Login com e-mail e senha + dashboard de CRM (visão geral, clientes e funil kanban).
+Stack: Next.js 16, Supabase, Tailwind + shadcn/ui, dnd-kit, Zod, Vitest e Playwright.
+Publicado no EasyPanel a partir do `Dockerfile` da raiz.
 
-First, run the development server:
+## Rodar localmente
+
+Pré-requisitos: Node.js 22+ e Docker Desktop aberto.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npx supabase start          # sobe Postgres + Auth locais e aplica as migrations
+npx supabase status -o env  # copie os valores para o .env.local (veja .env.example)
+npm run dev                 # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Testes
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm test          # unidade (regras puras em lib/)
+npm run test:db   # banco: RLS, trigger e funções SQL (precisa do Supabase local)
+npm run test:e2e  # ponta a ponta com Playwright (precisa do Supabase local)
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`test:db` e `test:e2e` criam e apagam usuários com a service role, então recusam rodar se
+`NEXT_PUBLIC_SUPABASE_URL` não apontar para `127.0.0.1` ou `localhost`.
 
-## Learn More
+## Publicar no EasyPanel
 
-To learn more about Next.js, take a look at the following resources:
+O app vai como imagem Docker (`Dockerfile` na raiz, Next.js em `output: 'standalone'`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **Banco:** crie um projeto em https://supabase.com — ou suba um Supabase self-hosted no
+   próprio EasyPanel. Em Authentication → Sign In / Providers → Email,
+   **desligue "Confirm email"**.
+2. Envie as migrations para ele:
+   ```bash
+   npx supabase login
+   npx supabase link --project-ref <id-do-projeto>
+   npx supabase db push
+   ```
+3. No EasyPanel, crie um **App** no seu projeto e aponte a origem para este repositório Git
+   (branch `main`). Em **Build**, escolha **Dockerfile** (`./Dockerfile`).
+4. Em **Environment**, cadastre **só** estas duas variáveis, **antes do primeiro build**:
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=...
+   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
+   ```
+   (estão em Project Settings → API Keys do Supabase). Elas são embutidas no bundle durante o
+   build, por isso precisam existir antes dele — se você mudá-las depois, refaça o deploy.
+   **Nunca** cadastre `SUPABASE_SERVICE_ROLE_KEY` aqui: ela ignora o RLS e só é usada pelos
+   testes locais.
+5. Em **Domains**, exponha a porta **3000** e ative o HTTPS (Let's Encrypt).
+6. Clique em **Deploy**. Para acompanhar, use a aba Logs do serviço.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Como a segurança funciona
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `proxy.ts` renova a sessão e redireciona quem não está logado.
+- Cada página e cada Server Action checam o usuário de novo (`exigirUsuario` / `obterUsuario`).
+- O banco é a garantia final: RLS em todas as tabelas e uma FK composta
+  `(cliente_id, user_id)` que impede ligar um negócio ao cliente de outra pessoa.

@@ -1,7 +1,8 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Gera .next/standalone: a imagem carrega só o necessário e roda com `node server.js`.
+  output: 'standalone',
 };
 
 export default nextConfig;
