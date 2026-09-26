@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import { config } from 'dotenv';
 
+// .env.test.local mantém o Supabase local; .env.local pode apontar para a nuvem.
+config({ path: '.env.test.local' });
 config({ path: '.env.local' });
 
 export default defineConfig({

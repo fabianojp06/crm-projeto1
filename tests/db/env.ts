@@ -1,5 +1,7 @@
 import { config } from 'dotenv';
 
+// .env.test.local mantém o Supabase local; .env.local pode apontar para a nuvem.
+config({ path: '.env.test.local' });
 config({ path: '.env.local' });
 
 // Mesmo motivo do teardown do Playwright: estes testes criam e apagam usuários com a
