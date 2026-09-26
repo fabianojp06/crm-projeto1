@@ -24,7 +24,7 @@ export function FormCliente({ cliente, aoConcluir }: { cliente?: Cliente; aoConc
     estado.valores?.[campo] ?? cliente?.[campo] ?? '';
 
   return (
-    <form action={acao} className="space-y-4">
+    <form action={acao} noValidate className="space-y-4">
       {cliente && <input type="hidden" name="id" value={cliente.id} />}
       <Campo nome="nome" rotulo="Nome" padrao={v('nome')} erros={estado.erros?.nome} />
       <Campo nome="email" rotulo="E-mail" tipo="email" padrao={v('email')} erros={estado.erros?.email} />

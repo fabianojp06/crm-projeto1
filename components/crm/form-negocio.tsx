@@ -67,7 +67,7 @@ export function FormNegocio({
   }
 
   return (
-    <form action={acao} className="space-y-4">
+    <form action={acao} noValidate className="space-y-4">
       {negocio && <input type="hidden" name="id" value={negocio.id} />}
       <Campo nome="titulo" rotulo="Título" padrao={v('titulo', negocio?.titulo ?? '')} erros={estado.erros?.titulo} />
 

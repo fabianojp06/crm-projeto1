@@ -10,7 +10,7 @@ import { ESTADO_INICIAL } from '@/lib/acoes';
 export function FormLogin() {
   const [estado, acao, pendente] = useActionState(entrar, ESTADO_INICIAL);
   return (
-    <form action={acao} className="space-y-4">
+    <form action={acao} noValidate className="space-y-4">
       <Campo nome="email" rotulo="E-mail" tipo="email" autoComplete="email" padrao={estado.valores?.email} erros={estado.erros?.email} />
       <Campo nome="senha" rotulo="Senha" tipo="password" autoComplete="current-password" erros={estado.erros?.senha} />
       {estado.mensagem && <p role="alert" className="text-sm text-destructive">{estado.mensagem}</p>}

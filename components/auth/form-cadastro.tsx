@@ -10,7 +10,7 @@ import { ESTADO_INICIAL } from '@/lib/acoes';
 export function FormCadastro() {
   const [estado, acao, pendente] = useActionState(cadastrar, ESTADO_INICIAL);
   return (
-    <form action={acao} className="space-y-4">
+    <form action={acao} noValidate className="space-y-4">
       <Campo nome="nome" rotulo="Nome" autoComplete="name" padrao={estado.valores?.nome} erros={estado.erros?.nome} />
       <Campo nome="email" rotulo="E-mail" tipo="email" autoComplete="email" padrao={estado.valores?.email} erros={estado.erros?.email} />
       <Campo nome="senha" rotulo="Senha" tipo="password" autoComplete="new-password" erros={estado.erros?.senha} />
